@@ -56,7 +56,16 @@ def predict_with_bertopic(
 ) -> list[TopicPrediction]:
     topics, probs = topic_model.transform([text])
     topic_id = int(topics[0])
-    score = float(probs[0][topic_id]) if probs is not None and len(probs) > 0 else 0.0
+    try:
+        if probs is not None and hasattr(probs, "__len__") and len(probs) > 0:
+            if hasattr(probs[0], "__getitem__") and topic_id < len(probs[0]):
+                score = float(probs[0][topic_id])
+            else:
+                score = 0.0
+        else:
+            score = 0.0
+    except (TypeError, IndexError):
+        score = 0.0
     return [
         TopicPrediction(
             topic_id=topic_id,
