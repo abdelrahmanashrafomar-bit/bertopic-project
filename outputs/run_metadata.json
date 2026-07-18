@@ -1,0 +1,165 @@
+{
+  "timestamp": "2026-07-18T00:32:31.718399+00:00",
+  "steps_completed": [
+    "validate"
+  ],
+  "n_documents": 0,
+  "n_topics": 0,
+  "outlier_pct": 0.0,
+  "embedding_model": "",
+  "umap_params": {},
+  "hdbscan_params": {},
+  "config_snapshot": {
+    "project": {
+      "random_seed": 42
+    },
+    "paths": {
+      "raw_complaints": "data/raw/complaints.csv",
+      "sample_50k": "data/processed/cfpb_sample_50k.csv",
+      "bertopic_ready": "data/processed/cfpb_bertopic_ready.csv",
+      "embeddings": "artifacts/embeddings.npy",
+      "embeddings_umap": "artifacts/embeddings_umap.npy",
+      "cluster_labels": "artifacts/cluster_labels.npy",
+      "final_labeled_topics": "outputs/cfpb_final_with_labeled_topics.csv",
+      "topic_centroids": "artifacts/topic_centroids.npy",
+      "bertopic_model_dir": "artifacts/model",
+      "specific_topics_over_time_html": "outputs/specific_topics_over_time.html",
+      "intertopic_distance_map_html": "outputs/intertopic_distance_map.html",
+      "topic_hierarchy_html": "outputs/topic_hierarchy.html",
+      "topics_evolution_over_time_html": "outputs/topics_evolution_over_time.html",
+      "topic_lookup": "artifacts/topic_lookup.csv",
+      "labels": "artifacts/labels.csv",
+      "run_metadata": "outputs/run_metadata.json"
+    },
+    "preprocessing": {
+      "sample_size": 50000,
+      "deduplicate_column": "Consumer complaint narrative",
+      "text_column": "Consumer complaint narrative",
+      "language_candidates": [
+        "ENGLISH",
+        "SPANISH",
+        "FRENCH",
+        "GERMAN",
+        "CHINESE",
+        "ARABIC"
+      ]
+    },
+    "embedding": {
+      "model_name": "codefuse-ai/F2LLM-1.7B",
+      "torch_dtype": "float16",
+      "device_map": "auto",
+      "batch_size": 2
+    },
+    "evaluation": {
+      "embedding_test_sample_size": 100,
+      "embedding_pair_sample_size": 1000,
+      "top_k_similar_pairs": 1000
+    },
+    "umap": {
+      "final": {
+        "n_neighbors": 15,
+        "n_components": 5,
+        "min_dist": 0.0,
+        "metric": "cosine",
+        "random_state": 42
+      },
+      "visualization": {
+        "n_neighbors": 15,
+        "n_components": 2,
+        "min_dist": 0.0,
+        "metric": "cosine",
+        "random_state": 42
+      },
+      "tuning": {
+        "sample_size": 10000,
+        "n_neighbors": [
+          10,
+          15,
+          30,
+          50
+        ],
+        "n_components": 5,
+        "min_dist": 0.0,
+        "metric": "cosine",
+        "random_state": 42,
+        "trustworthiness_neighbors": 15
+      },
+      "trustworthiness": {
+        "sample_size": 5000,
+        "n_neighbors": 15
+      }
+    },
+    "hdbscan": {
+      "tuning": {
+        "min_cluster_size": [
+          10,
+          15,
+          25,
+          40,
+          60
+        ],
+        "min_samples": [
+          5,
+          10,
+          15
+        ],
+        "metric": "euclidean",
+        "cluster_selection_method": "eom",
+        "gen_min_span_tree": true
+      },
+      "umap_tuning_eval": {
+        "min_cluster_size": 15,
+        "metric": "euclidean",
+        "cluster_selection_method": "eom",
+        "gen_min_span_tree": true
+      },
+      "final": {
+        "metric": "euclidean",
+        "cluster_selection_method": "eom",
+        "gen_min_span_tree": true
+      }
+    },
+    "bertopic": {
+      "vectorizer_stop_words": [
+        "protected",
+        "date",
+        "english"
+      ],
+      "calculate_probabilities": false,
+      "serialization": "safetensors",
+      "outlier_label": "Outliers / Unclassified",
+      "text_column_candidates": [
+        "clean_narrative",
+        "Consumer complaint narrative"
+      ],
+      "date_column_candidates": [
+        "Date received",
+        "date_received",
+        "date",
+        "Date"
+      ]
+    },
+    "gemini": {
+      "model": "gemini-3.1-flash-lite",
+      "topic_label_batch_size": 15,
+      "max_retries": 3,
+      "retry_delay_seconds": 10,
+      "label_keywords_limit": 8,
+      "representative_doc_chars": 300
+    },
+    "topics_over_time": {
+      "nr_bins": 20,
+      "target_topics": [
+        0,
+        1
+      ]
+    },
+    "inference": {
+      "method": "centroid_similarity",
+      "top_n": 3,
+      "model_dir": "artifacts/model",
+      "lookup_path": "artifacts/topic_lookup.csv",
+      "fallback_method": "centroid_similarity"
+    }
+  }
+}

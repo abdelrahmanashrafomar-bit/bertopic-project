@@ -1,0 +1,45 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local environment variables
+.env
+
+# Package manager lock files
+uv.lock
+
+# OpenCode agent config
+.agents/
+
+# Test cache
+.pytest_cache/
+
+# Python cache (already globbed above)
+__pycache__/
+
+# Generated ML artifacts (npy, html)
+*.npy
+!artifacts/topic_centroids.npy
+*.html
+
+# Ignore all CSV files by default, keep only small metadata CSVs needed for inference
+*.csv
+!artifacts/topic_lookup.csv
+!artifacts/labels.csv
+
+# Ignore model contents except files needed for inference
+artifacts/model/*
+!artifacts/model/config.json
+!artifacts/model/topics.json
+!artifacts/model/topic_embeddings.safetensors
+
+# IDE files
+.vscode/
+.idea/
