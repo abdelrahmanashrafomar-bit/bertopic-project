@@ -35,6 +35,18 @@ def run_clustering(config: dict) -> None:
     run(config)
 
 
+def run_compute_centroids(config: dict) -> None:
+    print("Computing topic centroids...")
+    from src.topic_modeling.fit import compute_topic_centroids, save_topic_centroids
+    from src.topic_modeling.fit import load_data
+    from src.config import get_project_root
+
+    root = get_project_root()
+    df, documents, embeddings, labels, text_column = load_data(config)
+    centroids = compute_topic_centroids(embeddings, labels)
+    save_topic_centroids(centroids, root / config["paths"]["topic_centroids"])
+
+
 def run_topic_modeling(config: dict) -> None:
     print("Running BERTopic fitting...")
     from src.topic_modeling.fit import run
@@ -71,6 +83,7 @@ STEP_MAP = {
     "evaluate": run_evaluate_embedding,
     "umap": run_umap,
     "clustering": run_clustering,
+    "compute_centroids": run_compute_centroids,
     "topic_modeling": run_topic_modeling,
     "labeling": run_labeling,
     "visualize": run_visualize,

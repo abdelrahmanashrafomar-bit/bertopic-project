@@ -13,6 +13,23 @@ from src.config import get_project_root
 from src.validators import ensure_file_exists
 
 
+def compute_topic_centroids(embeddings: np.ndarray, labels: np.ndarray) -> dict[int, np.ndarray]:
+    centroids = {}
+    for tid in np.unique(labels):
+        if tid == -1:
+            continue
+        mask = labels == tid
+        centroids[int(tid)] = embeddings[mask].mean(axis=0)
+    print(f"Computed centroids for {len(centroids)} topics (embedding dim={list(centroids.values())[0].shape[0]})")
+    return centroids
+
+
+def save_topic_centroids(centroids: dict[int, np.ndarray], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.save(path, centroids)
+    print(f"Topic centroids saved: {path} ({len(centroids)} topics)")
+
+
 def load_data(config: dict) -> tuple:
     root = get_project_root()
     paths = config["paths"]
@@ -84,5 +101,8 @@ def run(config: dict) -> BERTopic:
 
     topic_model = fit_bertopic(documents, embeddings, labels, config)
     save_model(topic_model, root / paths["bertopic_model_dir"], config["bertopic"]["serialization"])
+
+    centroids = compute_topic_centroids(embeddings, labels)
+    save_topic_centroids(centroids, root / paths["topic_centroids"])
 
     return topic_model

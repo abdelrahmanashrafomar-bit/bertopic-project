@@ -4,11 +4,13 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.metrics.pairwise import cosine_similarity
 from sentence_transformers import SentenceTransformer
 
 from src.config import get_project_root
 from src.inference.schemas import TopicPrediction
+from src.preprocessing.clean import clean_cfpb_text
 from src.validators import ensure_file_exists
 
 
@@ -75,6 +77,18 @@ def predict_with_bertopic(
     ][:top_n]
 
 
+def _build_embedding_model(emb_cfg: dict) -> SentenceTransformer:
+    dtype = getattr(torch, emb_cfg.get("torch_dtype", "float16"), torch.float16)
+    model = SentenceTransformer(
+        emb_cfg["model_name"],
+        model_kwargs={"torch_dtype": dtype, "device_map": emb_cfg.get("device_map", "auto")},
+        trust_remote_code=True,
+    )
+    if torch.cuda.is_available():
+        model = model.to("cuda")
+    return model
+
+
 def predict(
     text: str,
     config: dict,
@@ -84,14 +98,12 @@ def predict(
     inf_cfg = config["inference"]
     emb_cfg = config["embedding"]
 
+    text = clean_cfpb_text(text)
     lookup = load_lookup(root, inf_cfg["lookup_path"])
 
     if method == "centroid_similarity":
         centroids = load_topic_centroids(root, config["paths"]["topic_centroids"])
-        embedding_model = SentenceTransformer(
-            emb_cfg["model_name"],
-            trust_remote_code=True,
-        )
+        embedding_model = _build_embedding_model(emb_cfg)
         return predict_with_centroids(
             text, embedding_model, centroids, lookup,
             top_n=inf_cfg.get("top_n", 3),
@@ -101,10 +113,7 @@ def predict(
         from bertopic import BERTopic
         model_dir = root / inf_cfg["model_dir"]
         ensure_file_exists(model_dir, "BERTopic model directory")
-        embedding_model = SentenceTransformer(
-            emb_cfg["model_name"],
-            trust_remote_code=True,
-        )
+        embedding_model = _build_embedding_model(emb_cfg)
         topic_model = BERTopic.load(model_dir, embedding_model=embedding_model)
         return predict_with_bertopic(
             text, topic_model, lookup,
