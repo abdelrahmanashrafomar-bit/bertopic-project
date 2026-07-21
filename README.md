@@ -73,6 +73,7 @@ bertopic-project/
 |
 +-- main.py                        # CLI entry point: python main.py --step <name>
 +-- demo.py                        # Interactive terminal demo for real-time inference
++-- app.py                         # Streamlit Web GUI dashboard
 +-- config.yaml                    # Single source of truth (paths, params, methods)
 +-- pyproject.toml                 # Dependencies, scripts, project metadata
 +-- .gitignore
@@ -319,17 +320,41 @@ New Complaint Text
 
 ---
 
-## Interactive Demo
+## Interactive Demo & Web GUI
 
-`demo.py` is a rich terminal application for real-time inference. It is designed to record well for LinkedIn and portfolio demos.
+This project includes two separate interactive demo clients for real-time inference: a **Terminal CLI** (`demo.py`) and a **Streamlit Web GUI** (`app.py`). Both are designed to showcase model inference cleanly for portfolio presentations.
 
-### Launch
+---
+
+### 🖥️ Option A: Streamlit Web GUI (`app.py`)
+
+A full interactive dashboard that runs inside your browser. It caches the model in GPU/CPU memory once and embeds interactive charts dynamically.
+
+#### Launch
+
+```bash
+streamlit run app.py
+```
+
+#### GUI Features
+* **Clickable Templates:** Quick-test buttons for common complaint scenarios (Identity Theft, Debt Collection, Mortgage).
+* **Metric Cards & Badges:** Renders the predicted topic category, topic size, and keywords as visual tags.
+* **Calibrated Progress Indicators:** Custom similarity bars mapped to the F2LLM embedding range.
+* **Embedded Intertopic Diagrams:** Renders the interactive HTML cluster maps generated during training (`Intertopic Distance Map` & `Hierarchy Tree`) directly inside web page tabs.
+
+---
+
+### 📟 Option B: Terminal CLI (`demo.py`)
+
+A styled terminal application using the `rich` library, ideal for quick terminal-based captures or LinkedIn screen records.
+
+#### Launch
 
 ```bash
 python demo.py
 ```
 
-### What it shows
+#### What it shows
 
 ```
 ╔══════════════════════════════════════════════════════════════════╗
@@ -362,13 +387,12 @@ Enter a consumer complaint: My mortgage servicer incorrectly reported...
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Demo features
-
-- **Lazy artifact loading** — everything is loaded once and cached in memory; subsequent queries are instant
-- **Styled startup stats** — shows topic count, training document count, model name, and device
-- **Low-confidence warning** — if Embedding similarity falls below 12%, a `⚠ Low similarity` warning is displayed
-- **Graceful error handling** — missing artifacts print a styled error message with the fix command, then exit cleanly
-- **Keyboard interrupt** — `Ctrl+C` exits gracefully at any point
+#### Client Features
+* **Lazy artifact loading** — everything is loaded once and cached in memory; subsequent queries are instant.
+* **Styled startup stats** — displays topic count, training document count, model name, and device.
+* **Low-confidence warning** — if Embedding similarity falls below 12%, a `⚠ Low similarity` warning is displayed.
+* **Graceful error handling** — missing files print a styled error message with the fix command, then exit cleanly.
+* **Keyboard interrupt** — `Ctrl+C` exits gracefully at any point.
 
 ---
 
