@@ -140,57 +140,41 @@ def _load_artifacts() -> None:
 # ---------------------------------------------------------------------------
 
 def predict(text: str) -> dict | None:
-    """Clean, embed, and return a single BERTopic prediction.
+    """Clean, embed, and return a single BERTopic prediction with its confidence.
 
     Returns None if the input is empty after cleaning.
 
-    The result dict contains two confidence signals:
-    - ``bertopic_score``:  cosine similarity of the query to the BERTopic-
-                           predicted topic's centroid.  Measures how well the
-                           complaint fits the specific topic BERTopic chose.
-    - ``embedding_score``: maximum cosine similarity across *all* topic
-                           centroids.  Measures the best geometric match
-                           regardless of which topic was picked.  If this is
-                           much higher than ``bertopic_score``, BERTopic
-                           assigned a topic that is not the nearest centroid.
+    The confidence score is the cosine similarity of the query embedding
+    to the centroid of the BERTopic-predicted topic.
     """
     _load_artifacts()
     text = clean_cfpb_text(text)
     if not text.strip():
         return None
 
-    # Single encode call — vector reused for both signals
+    # Single encode call
     vec = _embedding_model.encode([text], convert_to_numpy=True)
 
     # ── BERTopic topic assignment ────────────────────────────────────────────
     topics, _ = _topic_model.transform([text])
     topic_id  = int(topics[0])
 
-    # Signal 1 — BERTopic similarity:
-    #   cosine(query, centroid of the BERTopic-chosen topic)
-    #   topic_id == -1 (outlier) has no centroid → score = 0.0
+    # Score: cosine similarity to the predicted topic's centroid.
+    # If topic_id == -1 (outlier) it has no centroid → score = 0.0.
     if topic_id in _centroids:
-        centroid       = _centroids[topic_id].reshape(1, -1)
-        bertopic_score = float(cosine_similarity(vec, centroid)[0][0])
+        centroid = _centroids[topic_id].reshape(1, -1)
+        score    = float(cosine_similarity(vec, centroid)[0][0])
     else:
-        bertopic_score = 0.0
-
-    # Signal 2 — Embedding similarity:
-    #   max cosine across ALL topic centroids (best geometric fit)
-    ordered_ids    = sorted(_centroids.keys())
-    centroid_mat   = np.array([_centroids[tid] for tid in ordered_ids])
-    sims           = cosine_similarity(vec, centroid_mat)[0]
-    embedding_score = float(np.max(sims))
+        score = 0.0
 
     str_id = str(topic_id)
     return {
         "topic_id":        topic_id,
         "label":           _lookup.get(topic_id, "Unknown Topic"),
-        "bertopic_score":  bertopic_score,
-        "embedding_score": embedding_score,
+        "score":           score,
         "keywords":        _topic_keywords.get(str_id, []),
         "size":            _topic_sizes.get(str_id, 0),
-        "low_confidence":  bertopic_score < _SIM_LOW_WARN,
+        "low_confidence":  score < _SIM_LOW_WARN,
     }
 
 
@@ -256,8 +240,7 @@ def show_results(text: str, result: dict | None) -> None:
 
     label          = result["label"]
     topic_id       = result["topic_id"]
-    b_score        = result["bertopic_score"]
-    e_score        = result["embedding_score"]
+    score          = result["score"]
     keywords       = result["keywords"]
     size           = result["size"]
     low_conf       = result["low_confidence"]
@@ -287,20 +270,15 @@ def show_results(text: str, result: dict | None) -> None:
     console.print()
 
     # ── 3. Confidence Signals ────────────────────────────────────────────────
-    b_bar, b_pct, b_color = _make_bar(b_score)
-    e_bar, e_pct, e_color = _make_bar(e_score)
+    bar, pct, color = _make_bar(score)
 
     signals = Table.grid(padding=(0, 2))
     signals.add_column(style="dim white", justify="right", min_width=22)
     signals.add_column()
 
     signals.add_row(
-        "BERTopic similarity",
-        f"[{b_color}]{b_bar}[/]  [{b_color}]{b_pct}[/]",
-    )
-    signals.add_row(
         "Embedding similarity",
-        f"[{e_color}]{e_bar}[/]  [{e_color}]{e_pct}[/]",
+        f"[{color}]{bar}[/]  [{color}]{pct}[/]",
     )
     if low_conf:
         signals.add_row(

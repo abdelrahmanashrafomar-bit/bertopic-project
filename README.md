@@ -1,6 +1,6 @@
-﻿# BERTopic CFPB Complaint Analysis Pipeline
+# BERTopic CFPB Complaint Analysis Pipeline
 
-A modular, production-oriented topic modeling pipeline for the CFPB Consumer Complaint Database. Discovers complaint themes at scale using BERTopic with precomputed embeddings, UMAP reduction, HDBSCAN clustering, and LLM-powered labeling -- with CPU-friendly centroid similarity inference for deployment.
+A modular, production-oriented topic modeling pipeline for the CFPB Consumer Complaint Database. Discovers complaint themes at scale using BERTopic with precomputed embeddings, UMAP dimensionality reduction, HDBSCAN clustering, and Gemini-powered topic labeling — with an interactive terminal demo for real-time inference.
 
 ---
 
@@ -16,7 +16,7 @@ The Consumer Financial Protection Bureau (CFPB) receives millions of consumer co
 - **Emerging pattern detection**: New fraud schemes or recurring consumer pain points appear as distinct clusters, enabling proactive investigation.
 - **Analyst efficiency**: Reduces thousands of complaints into a handful of interpretable topics with human-readable labels.
 - **Reporting support**: Labeled topics can feed dashboards, trend analysis, and regulatory reporting.
-- **Reproducibility**: The pipeline is fully scripted and version-controlled -- no black-box notebook cells.
+- **Reproducibility**: The pipeline is fully scripted and version-controlled — no black-box notebook cells.
 
 ---
 
@@ -49,8 +49,8 @@ flowchart TB
         A2("Frequencies") --> A5
         A3("Dendrogram") --> A5
     end
-    subgraph inference["8. Inference"]
-        I1("New complaint") --> I2("Encode") --> I3("Centroid similarity") --> I4("Top-k topics")
+    subgraph inference["8. Inference (demo.py)"]
+        I1("New complaint") --> I2("F2LLM encode") --> I3("BERTopic.transform") --> I4("Topic + Confidence Signals")
     end
 
     D2 --> C1
@@ -64,19 +64,22 @@ flowchart TB
 
 > PNG version: [docs/architecture.png](docs/architecture.png)
 
+---
+
 ## Repository Structure
 
 ```
 bertopic-project/
 |
-+-- main.py                        # CLI entry point: python -m main --step <name>
++-- main.py                        # CLI entry point: python main.py --step <name>
++-- demo.py                        # Interactive terminal demo for real-time inference
 +-- config.yaml                    # Single source of truth (paths, params, methods)
 +-- pyproject.toml                 # Dependencies, scripts, project metadata
 +-- .gitignore
 +-- README.md
 +-- DEPLOYMENT.md                  # Deployment guide for Lightning AI / inference server
 |
-+-- src/                           # Python package -- all pipeline logic
++-- src/                           # Python package — all pipeline logic
 |   +-- config.py                  # Config loader, project root resolver, RunMetadata
 |   +-- validators.py              # Shared validation utilities (file existence, column checks)
 |   |
@@ -93,7 +96,7 @@ bertopic-project/
 |   |   +-- cluster.py             # HDBSCAN fitting + grid search tuning (DBCV)
 |   |
 |   +-- topic_modeling/            # BERTopic integration + labeling
-|   |   +-- fit.py                 # BERTopic with precomputed labels (BaseCluster)
+|   |   +-- fit.py                 # BERTopic with precomputed labels (BaseCluster) + centroids
 |   |   +-- label.py               # Gemini-powered topic labeling (batching, retries, JSON)
 |   |   +-- visualize.py           # Intertopic distance, hierarchy, topics over time
 |   |
@@ -116,15 +119,15 @@ bertopic-project/
 |   +-- processed/                     # Preprocessed CSVs (gitignored)
 |
 +-- artifacts/
-|   +-- embeddings.npy                 # 2048-D corpus embeddings
-|   +-- embeddings_umap.npy            # UMAP-reduced embeddings (5D)
+|   +-- embeddings.npy                 # 2048-D corpus embeddings (training only)
+|   +-- embeddings_umap.npy            # UMAP-reduced embeddings, 5-D (training only)
 |   +-- cluster_labels.npy             # Raw HDBSCAN labels (pre-BERTopic renumbering)
-|   +-- topic_centroids.npy            # Dict[topic_id -> centroid vector]
-|   +-- topic_lookup.csv               # Topic ID -> human-readable label
-|   +-- labels.csv                     # Same mapping (redundant, cross-validation)
-|   +-- model/                         # Saved BERTopic model
+|   +-- topic_centroids.npy            # Dict[topic_id -> mean embedding vector]
+|   +-- topic_lookup.csv               # Topic ID -> Gemini-generated human-readable label
+|   +-- labels.csv                     # Same mapping (validation cross-reference)
+|   +-- model/                         # Saved BERTopic model (safetensors)
 |       +-- config.json
-|       +-- topics.json
+|       +-- topics.json                # Keywords, sizes, representations per topic
 |       +-- topic_embeddings.safetensors
 |
 +-- outputs/                           # Generated reports, plots, metadata
@@ -142,145 +145,245 @@ bertopic-project/
     +-- 06_bertopic_and_labels.ipynb
 ```
 
+---
+
 ## Training Pipeline
 
-The training pipeline is designed to be run once (offline) on a GPU-capable machine. Each step produces artifacts consumed by the next.
+The training pipeline runs **once, offline, on a GPU-capable machine**. Each step produces artifacts consumed by the next. Nothing here needs to be repeated at inference time.
 
 ```
 Raw CSV (complaints.csv)
    |
    v
 +---------------------------------------------------------------------+
-| Step 1: Preprocessing                                                |
+| Step 1: Preprocessing                                               |
 | ------------------------------------------------------------------- |
-| load_raw_csv() -> sample 50k rows -> clean text (PII redaction)      |
-| -> detect language -> deduplicate -> save bertopic_ready.csv         |
+| load_raw_csv() -> sample 50,000 rows (random_seed from config)      |
+| -> clean_cfpb_text(): PII redaction (XX/XX/YYYY -> [DATE],          |
+|      XXXX -> [PROTECTED]), whitespace normalisation                  |
+| -> lingua language detection -> deduplicate on text column           |
+| -> bertopic_ready.csv (35,993 unique complaints)                    |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
 | Step 2: Embedding Generation                                        |
 | ------------------------------------------------------------------- |
-| SentenceTransformer (codefuse-ai/F2LLM-1.7B) -> model.encode()      |
-| -> embeddings.npy (2048-D vectors, one per complaint)               |
+| SentenceTransformer(codefuse-ai/F2LLM-1.7B)                        |
+| model.encode(documents, batch_size=2, convert_to_numpy=True)        |
+| -> embeddings.npy  shape: (N, 2048)  dtype: float16                 |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
-| Step 3: UMAP Reduction                                               |
+| Step 3: UMAP Dimensionality Reduction                               |
 | ------------------------------------------------------------------- |
-| tune_umap(): grid search n_neighbors [10, 15, 30, 50]               |
-|   -> evaluate by trustworthiness + downstream DBCV                  |
-| fit_umap(): reduce 2048-D -> 5-D with best params                    |
-|   -> embeddings_umap.npy                                             |
+| tune_umap(): grid search n_neighbors [10, 15, 30, 50]              |
+|   -> score each by trustworthiness + downstream DBCV               |
+| fit_umap(): reduce 2048-D -> 5-D with best n_neighbors             |
+|   metric=cosine, min_dist=0.0, random_state=42                     |
+| -> embeddings_umap.npy  shape: (N, 5)                              |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
-| Step 4: HDBSCAN Clustering                                          |
+| Step 4: HDBSCAN Clustering                                         |
 | ------------------------------------------------------------------- |
-| tune_hdbscan(): grid search min_cluster_size x min_samples          |
-|   -> evaluate by DBCV (Density-Based Clustering Validation)         |
-| fit_hdbscan(): final clustering with best params                     |
-|   -> cluster_labels.npy (raw HDBSCAN labels)                        |
+| tune_hdbscan(): grid search min_cluster_size x min_samples         |
+|   -> score each configuration by DBCV                              |
+|      (Density-Based Clustering Validation index)                   |
+| fit_hdbscan(): final clustering with best params                   |
+|   metric=euclidean, cluster_selection_method=eom                   |
+| -> cluster_labels.npy  (raw HDBSCAN output, noise = -1)           |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
-| Step 5: BERTopic Fitting                                            |
+| Step 5: BERTopic Fitting + Centroid Computation                    |
 | ------------------------------------------------------------------- |
-| BERTopic(umap_model=BaseDimensionalityReduction(),                  |
-|          hdbscan_model=BaseCluster())                                |
-| -> fit_transform(documents, embeddings, y=cluster_labels)            |
-| -> renumbered topic IDs + topic_centroids.npy                       |
-| -> saved model (artifacts/model/)                                   |
+| BERTopic(                                                          |
+|   embedding_model=None,           # embeddings already computed    |
+|   umap_model=BaseDimensionalityReduction(),  # reduction done      |
+|   hdbscan_model=BaseCluster(),    # clustering done                |
+|   calculate_probabilities=False,             # not needed          |
+| )                                                                  |
+| .fit_transform(documents, embeddings=embeddings, y=cluster_labels) |
+| -> renumbered topic IDs (largest cluster = Topic 0)               |
+| -> c-TF-IDF keyword representations per topic                     |
+| -> topic_centroids.npy: mean embedding vector per topic           |
+|      (computed in original 2048-D space, NOT UMAP space)          |
+| -> artifacts/model/ (BERTopic saved as safetensors)               |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
-| Step 6: Gemini Labeling                                             |
+| Step 6: Gemini Topic Labeling                                      |
 | ------------------------------------------------------------------- |
-| For each topic: c-TF-IDF keywords + representative doc -> Gemini API |
-| -> topic_lookup.csv + labels.csv + final_labeled_topics.csv         |
+| For each topic:                                                    |
+|   prompt = c-TF-IDF keywords + 1 representative document          |
+|   -> Gemini API -> structured JSON label                           |
+|   -> retry with exponential backoff on failure                     |
+| -> topic_lookup.csv  (topic_id -> "Identity Theft Fraud Reporting")|
+| -> labels.csv        (same mapping, validation cross-reference)   |
+| -> outputs/cfpb_final_with_labeled_topics.csv                     |
 +---------------------------------------------------------------------+
    |
    v
 +---------------------------------------------------------------------+
-| Step 7: Visualization                                               |
+| Step 7: Visualization                                              |
 | ------------------------------------------------------------------- |
-| visualize_topics() -> intertopic distance map (HTML)                |
-| visualize_hierarchy() -> topic hierarchy dendrogram (HTML)          |
-| visualize_topics_over_time() -> topic evolution (HTML)              |
+| visualize_topics()       -> intertopic distance map (HTML)         |
+| visualize_hierarchy()    -> topic hierarchy dendrogram (HTML)      |
+| visualize_topics_over_time() -> topic evolution over time (HTML)  |
 +---------------------------------------------------------------------+
 ```
+
+---
 
 ## Inference Pipeline
 
-Inference is designed to be lightweight, CPU-compatible, and independent of the training pipeline.
+Inference is **independent of the training pipeline**. It only needs three artifacts: `topic_centroids.npy`, `topic_lookup.csv`, and `artifacts/model/`. No GPU, no Gemini API, no retraining required.
+
+The interactive demo (`demo.py`) implements this pipeline end-to-end.
 
 ```
-User Complaint Text
+New Complaint Text
         |
         v
-+---------------------------+
-|  SentenceTransformer      |
-|  model.encode()           |
-|  (uses encode() -- see    |
-|   Known Issues for        |
-|   encode_query() bug)     |
-|  Output: 2048-D           |
-|  query vector             |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-|  Cosine Similarity        |
-|  query vector x           |
-|  topic_centroids          |
-|  (matrix multiply)        |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-|  Top-k Topics             |
-|  (sorted by score)        |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-|  topic_lookup.csv         |
-|  (ID -> label)            |
-+-------------+-------------+
-              |
-              v
-+---------------------------+
-|  TopicPrediction          |
-|  {topic_id, label,        |
-|   score}                  |
-+---------------------------+
++------------------------------------------------------------------+
+| Preprocessing — clean_cfpb_text()                                |
+| ---------------------------------------------------------------- |
+| Same function used during training.                              |
+| PII redaction: XX/XX/YYYY -> [DATE], XXXX -> [PROTECTED]        |
+| Whitespace normalisation and strip                               |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+| Embedding — SentenceTransformer.encode()                         |
+| ---------------------------------------------------------------- |
+| Model: codefuse-ai/F2LLM-1.7B                                   |
+| Same model, same dtype (float16), same device_map as training   |
+| Output: query vector  shape: (1, 2048)                          |
+| Single encode() call — vector reused for both signals below     |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+| Topic Assignment — BERTopic.transform([text])                    |
+| ---------------------------------------------------------------- |
+| BERTopic uses its saved c-TF-IDF representation to assign       |
+| the complaint to the closest known topic.                        |
+| Output: topic_id (integer)                                      |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+| Confidence Signal — Embedding Similarity                          |
+| ---------------------------------------------------------------- |
+| cosine(query, centroid[topic_id])                               |
+|                                                                  |
+| Measures the geometric cosine similarity between the query      |
+| embedding and the centroid of the predicted BERTopic topic.     |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+| Label Lookup — topic_lookup.csv                                  |
+| ---------------------------------------------------------------- |
+| topic_id -> "Credit Report Payment Errors"                       |
+| keywords  <- artifacts/model/topics.json                        |
+| size      <- artifacts/model/topics.json                        |
++------------------------------------------------------------------+
+        |
+        v
++------------------------------------------------------------------+
+| Result dict                                                      |
+| ---------------------------------------------------------------- |
+| {                                                                |
+|   topic_id:        92,                                           |
+|   label:           "Credit Report Payment Errors",              |
+|   score:           0.630,   # cosine to predicted topic centroid|
+|   keywords:        ["late", "payments", "paid", "time", ...],   |
+|   size:            80,                                          |
+|   low_confidence:  False,                                       |
+| }                                                                |
++------------------------------------------------------------------+
 ```
 
-This architecture is production-friendly because:
+### Reading the Confidence Signal
 
-- **No BERTopic dependency at inference time** -- centroid similarity only needs `numpy`, `pandas`, `scikit-learn`, and `sentence-transformers`.
-- **No GPU required** -- the embedding model runs on CPU for single queries.
-- **No Gemini API call** -- labels are precomputed and stored in `topic_lookup.csv`.
-- **No retraining** -- inference is a simple matrix multiply against precomputed centroids.
-- **Idempotent** -- running inference never modifies artifacts.
+- **Embedding similarity** measures how close the complaint text is geometrically to the center of the assigned topic cluster.
+- Values typically sit in the range `0.60 – 0.95` due to the semantic properties of the dense F2LLM embeddings.
+- If similarity falls below **55%**, the complaint is flagged as low confidence (`low_confidence: True`), indicating it is likely a fringe case or doesn't fit any known topic cleanly.
+
+---
+
+## Interactive Demo
+
+`demo.py` is a rich terminal application for real-time inference. It is designed to record well for LinkedIn and portfolio demos.
+
+### Launch
+
+```bash
+python demo.py
+```
+
+### What it shows
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║             CFPB Complaint Topic Analyzer            ║
+║          BERTopic · F2LLM-1.7B · Cosine Similarity          ║
+╚══════════════════════════════════════════════════════════════════╝
+
+  ✓ Loaded: 87 topics · 36,842 training documents · codefuse-ai/F2LLM-1.7B · GPU
+
+Enter a consumer complaint: My mortgage servicer incorrectly reported...
+
+┌─ Complaint ─────────────────────────────────────────────────────┐
+│ "My mortgage servicer incorrectly reported my payment as late"  │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─ Predicted Topic ───────────────────────────────────────────────┐
+│                                                                 │
+│   Credit Report Payment Errors                                  │
+│   Topic ID 92                                                   │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─ Confidence Signals ────────────────────────────────────────────┐
+│   Embedding similarity   █████████████░░░░░░░░   63.0%         │
+└─────────────────────────────────────────────────────────────────┘
+
+┌─ Top Keywords ──────────────────────────────────────────────────┐
+│   ✓ late   ✓ payments   ✓ paid   ✓ time   ✓ report             │
+│                                                                 │
+│   Topic Documents: 80                                           │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Demo features
+
+- **Lazy artifact loading** — everything is loaded once and cached in memory; subsequent queries are instant
+- **Styled startup stats** — shows topic count, training document count, model name, and device
+- **Low-confidence warning** — if Embedding similarity falls below 55%, a `⚠ Low similarity` warning is displayed
+- **Graceful error handling** — missing artifacts print a styled error message with the fix command, then exit cleanly
+- **Keyboard interrupt** — `Ctrl+C` exits gracefully at any point
 
 ---
 
 ## Artifacts Explained
 
-| Artifact | Produced By | Consumed By | Training | Inference | Deletable After Training |
+| Artifact | Produced By | Consumed By | Training | Inference | Safe to Delete After Training |
 |---|---|---|---|---|---|
 | `embeddings.npy` | Step 2 (embedding) | Step 3 (UMAP) | Yes | No | Yes |
 | `embeddings_umap.npy` | Step 3 (UMAP) | Step 4 (HDBSCAN) | Yes | No | Yes |
-| `cluster_labels.npy` | Step 4 (HDBSCAN) | Step 5 (BERTopic) | Yes | No | Yes (raw HDBSCAN output; renumbered IDs only in centroids) |
-| `topic_centroids.npy` | Step 5 (BERTopic) | Inference | Yes | **Yes** | No |
-| `topic_lookup.csv` | Step 6 (Gemini) | Inference, Validation | Yes | **Yes** | No |
-| `labels.csv` | Step 6 (Gemini) | Validation | Yes | No | Yes (redundant with lookup) |
-| `model/` (BERTopic) | Step 5 (BERTopic) | Inference (fallback), Visualization | Yes | Optional | Yes (if not using BERTopic transform) |
+| `cluster_labels.npy` | Step 4 (HDBSCAN) | Step 5 (BERTopic) | Yes | No | Yes — raw HDBSCAN output; renumbered IDs live in centroids |
+| `topic_centroids.npy` | Step 5 (BERTopic) | Inference | Yes | **Yes** | No — required for inference |
+| `topic_lookup.csv` | Step 6 (Gemini) | Inference, Validation | Yes | **Yes** | No — required for inference |
+| `labels.csv` | Step 6 (Gemini) | Validation | Yes | No | Yes — redundant with lookup |
+| `model/` (BERTopic) | Step 5 (BERTopic) | Inference (transform), Visualization | Yes | **Yes** | No — required for demo inference |
+| `model/topics.json` | Step 5 (BERTopic) | Demo (keywords, sizes) | Yes | **Yes** | No — required for demo |
 
 ---
 
@@ -293,17 +396,14 @@ Steps: preprocessing -> embedding -> umap -> clustering ->
        topic_modeling -> labeling -> visualize
     |
     v
-ARTIFACTS (version-controlled subset)
-topic_centroids.npy | topic_lookup.csv | model/ (optional)
+ARTIFACTS (minimum required set for inference)
+topic_centroids.npy | topic_lookup.csv | artifacts/model/
     |
     v
-DEPLOYMENT (copy artifacts to target environment)
-No retraining. No Gemini API. No clustering. No BERTopic fitting.
-    |
-    v
-INFERENCE (runs many times, CPU-friendly)
-embed query -> cosine similarity with centroids -> top-k topics
--> look up human-readable label -> return TopicPrediction
+INFERENCE / DEMO (CPU-friendly, no retraining)
+python demo.py
+  -> embed complaint -> BERTopic.transform -> two confidence signals
+  -> topic label, keywords, size
 ```
 
 ---
@@ -318,7 +418,7 @@ This project intentionally avoids unnecessary complexity. Key principles:
 - **Minimal dependencies**: Only what is actually used. No `mlflow`, `dvc`, `kubeflow`, or orchestration frameworks.
 - **Clear separation**: Training and inference are independent code paths. Training is destructive; inference is read-only.
 - **Inference does not require Gemini**: Labels are precomputed. No API calls at inference time.
-- **Production inference only needs trained artifacts**: No BERTopic model, no clustering code, no training data.
+- **Preprocessing parity**: `demo.py` calls the exact same `clean_cfpb_text()` function used during training — no embedding mismatch.
 
 ---
 
@@ -342,7 +442,7 @@ UMAP reduces 2048-D embeddings to 5 dimensions before clustering. This is necess
 
 ### Why HDBSCAN instead of KMeans?
 
-- HDBSCAN does not require specifying the number of clusters in advance -- it discovers the natural cluster structure.
+- HDBSCAN does not require specifying the number of clusters in advance — it discovers the natural cluster structure.
 - It handles noise: complaints that do not fit any cluster are labeled as outliers (topic -1) rather than being force-assigned to an arbitrary cluster.
 - It can detect clusters of varying density, which is expected in real-world complaint data.
 
@@ -354,18 +454,13 @@ BERTopic normally runs UMAP + HDBSCAN internally. This project runs them indepen
 - **Validation**: Cluster quality can be assessed independently of topic modeling.
 - **Reproducibility**: The clustering step is decoupled and can be re-run without re-fitting BERTopic.
 
-### Why centroid similarity for inference?
+### Why are centroids computed in original embedding space, not UMAP space?
 
-Centroid similarity is the default inference method because:
+Topic centroids are mean vectors in the **original 2048-D embedding space**, not in UMAP's 5-D space. UMAP's non-linear projection is not reliably invertible for out-of-distribution inputs, so UMAP coordinates cannot be used for cosine similarity at inference time. Embedding-space centroids are stable and interpretable.
 
-- **Speed**: A single matrix multiply against precomputed centroids. No BERTopic model loading.
-- **CPU-friendly**: The embedding model runs on CPU for single queries. No GPU required.
-- **Deterministic**: Same input always produces the same output.
-- **Top-k support**: Returns multiple topic candidates with similarity scores, enabling confidence-based decision making.
+### Why BERTopic as the primary inference method in the demo?
 
-### Why keep BERTopic transform as a fallback?
-
-BERTopic's native `transform()` method is retained as a validation/fallback method. It provides a second opinion on topic assignment and can be used when GPU is available. The two methods can be compared via `scripts/compare_inference_methods.py` to measure agreement.
+The demo uses `BERTopic.transform()` as the primary topic assignment method, with centroid similarity used only as a secondary confidence signal. BERTopic's c-TF-IDF matching captures keyword-level semantics rather than just geometric proximity, which produces more interpretable topic assignments for financial complaint text.
 
 ---
 
@@ -416,28 +511,27 @@ Artifacts are the contract between training and inference. Versioning, validatio
 
 ### Reproducibility requires discipline
 
-- `config.yaml` captures every parameter -- no magic numbers in code.
+- `config.yaml` captures every parameter — no magic numbers in code.
 - `RunMetadata` records the full config snapshot and execution context.
 - Random seeds are set explicitly in config.
-- The pipeline is fully scripted -- no manual steps.
+- The pipeline is fully scripted — no manual steps.
+
+### Demo quality matters as much as model quality
+
+A technically correct model that is poorly presented loses its impact. The demo was redesigned from a confusing side-by-side method comparison into a clean vertical layout with a single authoritative prediction and two clearly labelled confidence signals. The distinction between "BERTopic similarity" and "Embedding similarity" tells a more useful story than "methods agree / disagree."
 
 ### Deployment considerations shape architecture
 
-Designing for deployment from the start (rather than as an afterthought) influenced every major decision: centroid similarity over BERTopic transform, config-driven paths, artifact validation, and separation of training and inference code paths.
-
-### Balancing complexity and value
-
-Every feature was evaluated against the question: "Does this meaningfully improve the output or the developer experience?" MMR, RepresentationModel, topic reduction, and orchestration frameworks were all considered and rejected because they added complexity without proportional benefit.
+Designing for deployment from the start (rather than as an afterthought) influenced every major decision: config-driven paths, artifact validation, and separation of training and inference code paths.
 
 ---
 
 ## Future Improvements
 
 - **Online learning**: Incrementally update centroids as new complaints arrive without full retraining.
-- **Confidence thresholds**: Reject low-confidence predictions and flag them for human review.
 - **REST API**: Wrap the inference pipeline in a FastAPI endpoint for production serving.
 - **CI/CD**: Add GitHub Actions for automated testing and artifact validation.
-- **Monitoring**: Track prediction drift over time -- do new complaints map to existing topics or form new patterns?
+- **Monitoring**: Track prediction drift over time — do new complaints map to existing topics or form new patterns?
 - **Multi-language support**: Extend preprocessing to handle non-English complaints (lingua-language-detector is already integrated).
 
 ---
@@ -463,7 +557,7 @@ pip install -e ".[dev]"
 
 | Variable | Required For | Description |
 |---|---|---|
-| `GEMINI_API_KEY` | Topic labeling | Google Gemini API key (set in `.env` file) |
+| `GEMINI_API_KEY` | Topic labeling (Step 6) | Google Gemini API key (set in `.env` file) |
 | `HF_TOKEN` | Model download | Hugging Face token (optional, for rate limits) |
 
 ---
@@ -503,67 +597,32 @@ bertopic:
   calculate_probabilities: false
   serialization: safetensors
 
-inference:
-  method: centroid_similarity    # default
-  top_n: 3
-  model_dir: artifacts/model
-  lookup_path: artifacts/topic_lookup.csv
-
 embedding:
   model_name: codefuse-ai/F2LLM-1.7B
+  torch_dtype: float16
+  device_map: auto
 ```
 
 ---
 
 ## How to Run
 
+### Interactive Demo (recommended starting point)
+
+```bash
+python demo.py
+```
+
+Loads all artifacts, then prompts for complaint text in an interactive loop. Displays the predicted topic, two confidence signals, top keywords, and topic size. Press `Ctrl+C` to exit.
+
 ### Validation (read-only, safe)
 
 ```bash
-python -m main --step validate
+python main.py --step validate
 python -m pytest tests/ -v
 ```
 
-### Inference
-
-```bash
-# Run example inference (centroid similarity, CPU-safe)
-python -m main --step inference
-
-# Or use the API directly
-python -c "
-from src.inference.predict import predict
-from src.config import load_config
-config = load_config()
-results = predict('I found unauthorized charges on my credit card.', config, method='centroid_similarity')
-for pred in results:
-    print(f'Topic {pred.topic_id}: {pred.label} (score={pred.score:.4f})')
-"
-```
-
-### Full Training Pipeline
-
-**WARNING**: Overwrites existing artifacts. Only run if you intend to retrain.
-
-```bash
-python -m main --step all
-```
-
-### Individual Training Steps
-
-```bash
-python -m main --step preprocessing
-python -m main --step embedding
-python -m main --step umap
-python -m main --step clustering
-python -m main --step topic_modeling
-python -m main --step labeling          # requires GEMINI_API_KEY
-python -m main --step visualize
-```
-
----
-
-## Example Prediction
+### Programmatic Inference
 
 ```python
 from src.inference.predict import predict
@@ -580,14 +639,36 @@ complaints = [
 for text in complaints:
     results = predict(text, config, method="centroid_similarity")
     best = results[0]
-    print(f"Complaint: {text[:50]}...")
+    print(f"Complaint: {text[:55]}...")
     print(f"  -> Topic {best.topic_id}: {best.label} (score={best.score:.4f})")
 ```
 
 Expected output:
 ```
-Complaint: Someone opened a credit card in my name without perm...
-  -> Topic 0: Identity Theft Fraud Reporting (score=0.5231)
+Complaint: Someone opened a credit card in my name without per...
+  -> Topic 0: Identity Theft Fraud Reporting (score=0.8102)
+```
+
+### Full Training Pipeline
+
+> **Warning**: Overwrites existing artifacts. Only run if you intend to retrain from scratch.
+
+```bash
+python main.py --step all
+```
+
+### Individual Training Steps
+
+```bash
+python main.py --step preprocessing
+python main.py --step embedding
+python main.py --step umap
+python main.py --step clustering
+python main.py --step topic_modeling
+python main.py --step labeling          # requires GEMINI_API_KEY
+python main.py --step visualize
+python main.py --step validate
+python main.py --step inference
 ```
 
 ---
@@ -605,20 +686,20 @@ Complaint: Someone opened a credit card in my name without perm...
 
 ## Critical Design Note: Cluster ID Scheme
 
-This pipeline uses **precomputed** clustering -- HDBSCAN is fit once outside of BERTopic, and its labels are passed into BERTopic via `BaseCluster` rather than letting BERTopic re-cluster. This allows UMAP/HDBSCAN hyperparameters to be tuned and validated independently using DBCV before topic modeling runs.
+This pipeline uses **precomputed** clustering — HDBSCAN is fit once outside of BERTopic, and its labels are passed into BERTopic via `BaseCluster` rather than letting BERTopic re-cluster. This allows UMAP/HDBSCAN hyperparameters to be tuned and validated independently using DBCV before topic modeling runs.
 
 **Important**: `cluster_labels.npy` on disk stores the **raw HDBSCAN output** (not renumbered). BERTopic renumbers topics by descending cluster size during `fit_transform()` (largest cluster becomes Topic `0`, etc.), but the renumbered labels are only kept in memory and used to compute `topic_centroids.npy`. The centroids are keyed by these renumbered IDs, and `topic_lookup.csv` maps the same renumbered IDs to labels.
 
-This means `cluster_labels.npy` (raw HDBSCAN IDs) and `topic_centroids.npy` (renumbered IDs) use **different ID schemes**. The centroids and lookup table are the authoritative source for inference; `cluster_labels.npy` is only needed if you want to reproduce or debug the raw clustering output.
+This means `cluster_labels.npy` (raw HDBSCAN IDs) and `topic_centroids.npy` (renumbered IDs) use **different ID schemes**. The centroids and lookup table are the authoritative source for inference; `cluster_labels.npy` is only needed to reproduce or debug the raw clustering output.
 
 ---
 
 ## Known Issues
 
-### Asymmetric embedding model: `encode()` vs `encode_query()`
+### `--step preprocessing` typo in `main.py`
 
-The embedding model (`codefuse-ai/F2LLM-1.7B`) is an asymmetric model -- it uses different internal pooling for documents vs. queries. The current inference code uses `model.encode()` for both training corpus embeddings and inference-time query embeddings. Using `encode()` for inference queries instead of `encode_query()` can produce a distribution mismatch against the corpus embeddings, leading to confidently wrong topic assignments -- this was observed empirically during testing. The fix is a one-line change in `src/inference/predict.py`: replace `model.encode()` with `model.encode_query()` for the inference path.
+The step key for preprocessing in `STEP_MAP` inside `main.py` is `"pring"` instead of `"preprocessing"`. Running `python main.py --step preprocessing` will report "Unknown step". As a workaround, run `python main.py --step all` to execute the full pipeline, or fix the key directly in `main.py`.
 
-### BERTopic transform comparison requires `calculate_probabilities: true`
+### `calculate_probabilities: false` — BERTopic scores are geometric, not probabilistic
 
-The `scripts/compare_inference_methods.py` script compares centroid similarity against BERTopic's native transform. Since `calculate_probabilities` is set to `false` in `config.yaml`, BERTopic transform only returns a placeholder score (0.0) rather than a true probability. For a meaningful comparison, temporarily set `calculate_probabilities: true` in `config.yaml` and re-run the training pipeline (Step 5: topic_modeling).
+`BERTopic.transform()` does not return meaningful topic probabilities when `calculate_probabilities: false` (the current setting). The confidence signals displayed in `demo.py` are therefore computed as **cosine similarity** values, not probabilities. This is clearly labelled in the demo UI. If true probability scores are needed, set `calculate_probabilities: true` in `config.yaml` and re-run Step 5 (`topic_modeling`).
