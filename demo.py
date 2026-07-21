@@ -15,7 +15,6 @@ import torch
 import yaml
 from bertopic import BERTopic
 from rich.console import Console
-from rich.layout import Layout
 from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.table import Table
@@ -27,7 +26,7 @@ from src.preprocessing.clean import clean_cfpb_text
 
 
 # ---------------------------------------------------------------------------
-# Project root & config path — artifact paths are read from config.yaml
+# Project root & config path — all artifact paths read from config.yaml
 # ---------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parent
 CONFIG_PATH  = PROJECT_ROOT / "config.yaml"
@@ -38,7 +37,7 @@ console = Console()
 # ---------------------------------------------------------------------------
 # Module-level artifact cache (lazy — loaded exactly once)
 # ---------------------------------------------------------------------------
-_loaded: bool = False                                   # explicit load flag
+_loaded: bool = False
 _embedding_model: SentenceTransformer | None = None
 _topic_model: BERTopic | None = None
 _centroids: dict[int, np.ndarray] | None = None
@@ -46,30 +45,28 @@ _lookup: dict[int, str] | None = None
 _topic_keywords: dict[str, list[str]] | None = None
 _topic_sizes: dict[str, int] | None = None
 _emb_cfg: dict | None = None
-_n_training_docs: int = 0                               # for startup stats
+_n_training_docs: int = 0
 
 
 # ---------------------------------------------------------------------------
-# Similarity thresholds — calibrated for cosine similarity in this embedding
-# space (F2LLM embeddings typically cluster between 0.60 – 0.95)
+# Similarity thresholds — calibrated for F2LLM cosine range (0.60 – 0.95)
 # ---------------------------------------------------------------------------
-_SIM_HIGH      = 0.80   # green
-_SIM_MED       = 0.65   # yellow
-_SIM_LOW_WARN  = 0.55   # below this → show "Low confidence" warning
+_SIM_HIGH     = 0.80   # green
+_SIM_MED      = 0.65   # yellow
+_SIM_LOW_WARN = 0.55   # below this → warn
 
 
 def _load_artifacts() -> None:
     """Load all artifacts once and cache in module globals.
 
-    All artifact paths are resolved from config.yaml — the single source
-    of truth — instead of being hardcoded in this file.
-    Raises a styled Rich error and exits if any file is missing or corrupt.
+    All paths are resolved from config.yaml — the single source of truth.
+    A styled Rich error + sys.exit(1) is raised for any missing file.
     """
     global _loaded, _embedding_model, _topic_model, _centroids, _lookup
     global _topic_keywords, _topic_sizes, _emb_cfg, _n_training_docs
 
     if _loaded:
-        return  # guard uses a dedicated flag, not a None-check on one variable
+        return
 
     try:
         # ── Config ─────────────────────────────────────────────────────────
@@ -78,16 +75,12 @@ def _load_artifacts() -> None:
         _emb_cfg = config["embedding"]
         paths    = config["paths"]
 
-        # Resolve every artifact path from config — consistent with the rest
-        # of the codebase; a single path change in config.yaml propagates here
         centroids_path = PROJECT_ROOT / paths["topic_centroids"]
         lookup_path    = PROJECT_ROOT / paths["topic_lookup"]
         model_dir      = PROJECT_ROOT / paths["bertopic_model_dir"]
         topics_json    = Path(model_dir) / "topics.json"
 
-        # ── Embedding model ─────────────────────────────────────────────────
-        # Loaded with the exact same settings as training (generate.py):
-        # torch_dtype, device_map, trust_remote_code, and explicit CUDA move.
+        # ── Embedding model — identical settings to training (generate.py) ──
         dtype = getattr(torch, _emb_cfg.get("torch_dtype", "float16"), torch.float16)
         _embedding_model = SentenceTransformer(
             _emb_cfg["model_name"],
@@ -113,9 +106,7 @@ def _load_artifacts() -> None:
         lookup_df = pd.read_csv(lookup_path)
         _lookup = lookup_df.set_index("Topic")["Topic_Label"].to_dict()
 
-        # ── BERTopic model (c-TF-IDF transform path) ──────────────────────────
-        # The same _embedding_model object is passed so BERTopic.transform()
-        # uses F2LLM-1.7B — consistent with training.
+        # ── BERTopic model — primary inference engine ─────────────────────────
         _topic_model = BERTopic.load(str(model_dir), embedding_model=_embedding_model)
 
         # ── Topic keywords + sizes from topics.json ───────────────────────────
@@ -130,7 +121,7 @@ def _load_artifacts() -> None:
         _topic_sizes = {str(k): v for k, v in sizes.items()}
         _n_training_docs = sum(sizes.values())
 
-        _loaded = True  # only set True after everything succeeds
+        _loaded = True  # only set after all artifacts load successfully
 
     except FileNotFoundError as exc:
         console.print(f"\n[bold red]✗ Missing artifact:[/] {exc}")
@@ -145,87 +136,86 @@ def _load_artifacts() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Inference helpers
+# Inference
 # ---------------------------------------------------------------------------
 
-def _predict_centroid(vec: np.ndarray) -> dict:
-    """Predict topic by cosine similarity to stored topic centroids.
+def predict(text: str) -> dict | None:
+    """Clean, embed, and return a single BERTopic prediction.
 
-    vec — precomputed query embedding, shape (1, dim).
-    """
-    ordered_ids  = sorted(_centroids.keys())
-    centroid_mat = np.array([_centroids[tid] for tid in ordered_ids])
-    sims         = cosine_similarity(vec, centroid_mat)[0]
-    best_idx     = int(np.argmax(sims))
-    topic_id     = int(ordered_ids[best_idx])
-    score        = float(sims[best_idx])
-    str_id       = str(topic_id)
-    return {
-        "method":         "Centroid Similarity",
-        "topic_id":       topic_id,
-        "label":          _lookup.get(topic_id, "Unknown Topic"),
-        "score":          score,
-        "keywords":       _topic_keywords.get(str_id, []),
-        "size":           _topic_sizes.get(str_id, 0),
-        "low_confidence": score < _SIM_LOW_WARN,
-    }
+    Returns None if the input is empty after cleaning.
 
-
-def _predict_bertopic(text: str, vec: np.ndarray) -> dict:
-    """Predict topic using BERTopic c-TF-IDF transform.
-
-    Score is cosine similarity between the query embedding and the centroid of
-    the BERTopic-predicted topic.  We do NOT use BERTopic's native probability
-    output because the model was trained with calculate_probabilities=False,
-    which means transform() always returns None/empty for probs — so the raw
-    probability value would always be 0.0, which is misleading.
-
-    vec — precomputed query embedding (same vector used by centroid method),
-    shape (1, dim).  Passing it in avoids a redundant encode() call.
-    """
-    topics, _ = _topic_model.transform([text])
-    topic_id  = int(topics[0])
-
-    # Score: cosine similarity to the predicted topic's centroid.
-    # If topic_id == -1 (outlier) it has no centroid entry → score = 0.0.
-    if topic_id in _centroids:
-        centroid = _centroids[topic_id].reshape(1, -1)
-        score    = float(cosine_similarity(vec, centroid)[0][0])
-    else:
-        score = 0.0
-
-    str_id = str(topic_id)
-    return {
-        "method":         "BERTopic c-TF-IDF",
-        "topic_id":       topic_id,
-        "label":          _lookup.get(topic_id, "Unknown Topic"),
-        "score":          score,
-        "keywords":       _topic_keywords.get(str_id, []),
-        "size":           _topic_sizes.get(str_id, 0),
-        "low_confidence": score < _SIM_LOW_WARN,
-    }
-
-
-def predict(text: str) -> list[dict]:
-    """Clean the input, embed it once, then run both inference methods.
-
-    Returns an empty list if the input is empty after cleaning.
+    The result dict contains two confidence signals:
+    - ``bertopic_score``:  cosine similarity of the query to the BERTopic-
+                           predicted topic's centroid.  Measures how well the
+                           complaint fits the specific topic BERTopic chose.
+    - ``embedding_score``: maximum cosine similarity across *all* topic
+                           centroids.  Measures the best geometric match
+                           regardless of which topic was picked.  If this is
+                           much higher than ``bertopic_score``, BERTopic
+                           assigned a topic that is not the nearest centroid.
     """
     _load_artifacts()
     text = clean_cfpb_text(text)
-
     if not text.strip():
-        return []
+        return None
 
-    # Single encode call — the same embedding vector is reused by both methods,
-    # keeping both scores comparable and avoiding a redundant forward pass.
+    # Single encode call — vector reused for both signals
     vec = _embedding_model.encode([text], convert_to_numpy=True)
-    return [_predict_centroid(vec), _predict_bertopic(text, vec)]
+
+    # ── BERTopic topic assignment ────────────────────────────────────────────
+    topics, _ = _topic_model.transform([text])
+    topic_id  = int(topics[0])
+
+    # Signal 1 — BERTopic similarity:
+    #   cosine(query, centroid of the BERTopic-chosen topic)
+    #   topic_id == -1 (outlier) has no centroid → score = 0.0
+    if topic_id in _centroids:
+        centroid       = _centroids[topic_id].reshape(1, -1)
+        bertopic_score = float(cosine_similarity(vec, centroid)[0][0])
+    else:
+        bertopic_score = 0.0
+
+    # Signal 2 — Embedding similarity:
+    #   max cosine across ALL topic centroids (best geometric fit)
+    ordered_ids    = sorted(_centroids.keys())
+    centroid_mat   = np.array([_centroids[tid] for tid in ordered_ids])
+    sims           = cosine_similarity(vec, centroid_mat)[0]
+    embedding_score = float(np.max(sims))
+
+    str_id = str(topic_id)
+    return {
+        "topic_id":        topic_id,
+        "label":           _lookup.get(topic_id, "Unknown Topic"),
+        "bertopic_score":  bertopic_score,
+        "embedding_score": embedding_score,
+        "keywords":        _topic_keywords.get(str_id, []),
+        "size":            _topic_sizes.get(str_id, 0),
+        "low_confidence":  bertopic_score < _SIM_LOW_WARN,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _make_bar(score: float, length: int = 20) -> tuple[str, str, str]:
+    """Return (bar_string, pct_string, color) for a cosine similarity score."""
+    filled = int(length * min(max(score, 0.0), 1.0))
+    bar    = "█" * filled + "░" * (length - filled)
+    pct    = f"{score * 100:.1f}%"
+    if score >= _SIM_HIGH:
+        color = "green"
+    elif score >= _SIM_MED:
+        color = "yellow"
+    else:
+        color = "red"
+    return bar, pct, color
 
 
 # ---------------------------------------------------------------------------
 # Welcome banner
 # ---------------------------------------------------------------------------
+
 def show_banner() -> None:
     banner = Text()
     banner.append("╔══════════════════════════════════════════════════════════════════╗\n")
@@ -233,7 +223,7 @@ def show_banner() -> None:
     banner.append("             CFPB Complaint Topic Analyzer            ", style="bold white")
     banner.append("║", style="bold cyan")
     banner.append("\n║", style="bold cyan")
-    banner.append("    Centroid Similarity  vs  BERTopic c-TF-IDF  •  F2LLM-1.7B    ", style="dim white")
+    banner.append("          BERTopic · F2LLM-1.7B · Cosine Similarity          ", style="dim white")
     banner.append("║", style="bold cyan")
     banner.append("\n╚══════════════════════════════════════════════════════════════════╝", style="bold cyan")
     console.print(Panel(banner, style="cyan", padding=(1, 2)))
@@ -253,112 +243,108 @@ def show_stats() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Results panel
+# Results display — clean vertical layout
 # ---------------------------------------------------------------------------
-def show_results(text: str, results: list[dict]) -> None:
-    # Guard: empty results mean the input was blank after cleaning
-    if not results:
+
+def show_results(text: str, result: dict | None) -> None:
+    if result is None:
         console.print(
             "[yellow]⚠ Input was empty after cleaning. "
             "Please type a real complaint.[/]\n"
         )
         return
 
-    # Complaint panel
-    complaint_panel = Panel(
-        Text(text, style="white", no_wrap=False),
+    label          = result["label"]
+    topic_id       = result["topic_id"]
+    b_score        = result["bertopic_score"]
+    e_score        = result["embedding_score"]
+    keywords       = result["keywords"]
+    size           = result["size"]
+    low_conf       = result["low_confidence"]
+
+    # ── 1. Complaint ─────────────────────────────────────────────────────────
+    console.print(Panel(
+        Text(f'"{text}"', style="white", no_wrap=False),
         title="[bold]Complaint[/]",
         border_style="dim white",
-        padding=(1, 2),
-    )
-
-    # Side-by-side method panels
-    compare = Table.grid(padding=(1, 3))
-    compare.add_column(justify="center")
-    compare.add_column(justify="center")
-
-    panels = []
-    for result in results:
-        topic_id   = result["topic_id"]
-        label      = result["label"]
-        score      = result["score"]
-        keywords   = result["keywords"]
-        size       = result["size"]
-        low_conf   = result["low_confidence"]
-
-        pct     = score * 100
-        bar_len = 20
-        filled  = int(bar_len * score)
-        bar     = "█" * filled + "░" * (bar_len - filled)
-
-        # Thresholds calibrated for F2LLM cosine similarity range (0.60 – 0.95)
-        if score >= _SIM_HIGH:
-            bar_color = "green"
-        elif score >= _SIM_MED:
-            bar_color = "yellow"
-        else:
-            bar_color = "red"
-
-        info = Table.grid(padding=(0, 2))
-        info.add_column(style="bold white", justify="right")
-        info.add_column(style="white")
-
-        info.add_row("Topic ID",   f"[bold cyan]{topic_id}[/]")
-        info.add_row("Label",      f"[bold green]{label}[/]")
-        info.add_row(
-            "Similarity",
-            f"[{bar_color}]{bar}  {pct:.1f}%[/]  [dim](cosine)[/]",
-        )
-        info.add_row(
-            "Keywords",
-            "  ".join(f"[magenta]{kw}[/]" for kw in keywords[:5]),
-        )
-        info.add_row(
-            "Topic size",
-            f"[bold]{size:,}[/] docs" if size else "[dim]N/A[/]",
-        )
-        if low_conf:
-            info.add_row(
-                "[yellow]⚠ Warning[/]",
-                "[yellow]Low similarity — may not match any known topic[/]",
-            )
-
-        panels.append(
-            Panel(
-                info,
-                title=f"[bold]{result['method']}[/]",
-                border_style="green",
-                padding=(1, 2),
-            )
-        )
-
-    compare.add_row(*panels)
-
-    layout = Layout()
-    layout.split_column(
-        Layout(complaint_panel, size=5),
-        Layout(compare, size=12),   # slightly taller to fit optional warning row
-    )
-
-    console.print(layout)
+        padding=(0, 2),
+    ))
     console.print()
 
-    # Agreement indicator — shows topic labels when methods disagree
-    if results[0]["topic_id"] == results[1]["topic_id"]:
-        console.print("  [bold green]✓ Both methods agree[/]")
-    else:
-        c_label = results[0]["label"]
-        b_label = results[1]["label"]
-        console.print(
-            f"  [bold yellow]⚠ Methods disagree[/] — "
-            f"Centroid: [cyan]{c_label}[/]  ·  BERTopic: [cyan]{b_label}[/]"
+    # ── 2. Predicted Topic ───────────────────────────────────────────────────
+    topic_display = Text()
+    topic_display.append(f"\n  {label}\n", style="bold bright_white")
+    topic_display.append(f"  Topic ID {topic_id}", style="dim cyan")
+    if topic_id == -1:
+        topic_display.append("  [Outlier — does not match known topics]", style="dim yellow")
+
+    console.print(Panel(
+        topic_display,
+        title="[bold cyan]Predicted Topic[/]",
+        border_style="cyan",
+        padding=(0, 2),
+    ))
+    console.print()
+
+    # ── 3. Confidence Signals ────────────────────────────────────────────────
+    b_bar, b_pct, b_color = _make_bar(b_score)
+    e_bar, e_pct, e_color = _make_bar(e_score)
+
+    signals = Table.grid(padding=(0, 2))
+    signals.add_column(style="dim white", justify="right", min_width=22)
+    signals.add_column()
+
+    signals.add_row(
+        "BERTopic similarity",
+        f"[{b_color}]{b_bar}[/]  [{b_color}]{b_pct}[/]",
+    )
+    signals.add_row(
+        "Embedding similarity",
+        f"[{e_color}]{e_bar}[/]  [{e_color}]{e_pct}[/]",
+    )
+    if low_conf:
+        signals.add_row(
+            "",
+            "[yellow]⚠  Low similarity — topic may not be a strong match[/]",
         )
+
+    console.print(Panel(
+        signals,
+        title="[bold]Confidence Signals[/]",
+        border_style="dim green",
+        padding=(1, 2),
+    ))
+    console.print()
+
+    # ── 4. Top Keywords ──────────────────────────────────────────────────────
+    kw_text = Text()
+    for kw in keywords[:6]:
+        kw_text.append("  ✓ ", style="bold green")
+        kw_text.append(kw, style="magenta")
+        kw_text.append("  ")
+
+    size_line = Text()
+    size_line.append("\n\n  Topic Documents: ", style="dim white")
+    size_line.append(f"{size:,}" if size else "N/A", style="bold white")
+
+    kw_block = Table.grid()
+    kw_block.add_column()
+    kw_block.add_row(kw_text)
+    kw_block.add_row(size_line)
+
+    console.print(Panel(
+        kw_block,
+        title="[bold]Top Keywords[/]",
+        border_style="dim magenta",
+        padding=(1, 2),
+    ))
     console.print()
 
 
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
+
 def main() -> None:
     show_banner()
 
@@ -375,9 +361,9 @@ def main() -> None:
             continue
 
         with console.status("[bold yellow]Analyzing complaint...", spinner="dots"):
-            results = predict(text)
+            result = predict(text)
 
-        show_results(text, results)
+        show_results(text, result)
 
         again = Prompt.ask(
             "[dim]Analyze another?[/]",
