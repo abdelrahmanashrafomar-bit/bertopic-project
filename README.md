@@ -23,7 +23,6 @@ The Consumer Financial Protection Bureau (CFPB) receives millions of consumer co
 ## Architecture
 
 ```mermaid
-%%{init: {'theme': 'neutral', 'themeVariables': { 'fontFamily': 'Arial, sans-serif' } } }%%
 flowchart TB
     subgraph data["1. Data Loading"]
         D1("CFPB raw CSV") --> D2("sample 50k")
@@ -61,15 +60,6 @@ flowchart TB
     H2 --> T4
     T4 --> A5
     T4 --> I4
-
-    style data fill:#e8f5e9,stroke:#2c3e50,stroke-width:2px
-    style clean fill:#f3e5f5,stroke:#2c3e50,stroke-width:2px
-    style embed fill:#e3f2fd,stroke:#2c3e50,stroke-width:2px
-    style umap fill:#fff3e0,stroke:#2c3e50,stroke-width:2px
-    style hdbscan fill:#fce4ec,stroke:#2c3e50,stroke-width:2px
-    style bertopic fill:#e8eaf6,stroke:#2c3e50,stroke-width:2px
-    style analysis fill:#f1f8e9,stroke:#2c3e50,stroke-width:2px
-    style inference fill:#fff8e1,stroke:#e65100,stroke-width:3px
 ```
 
 > PNG version: [docs/architecture.png](docs/architecture.png)
