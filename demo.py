@@ -49,11 +49,12 @@ _n_training_docs: int = 0
 
 
 # ---------------------------------------------------------------------------
-# Similarity thresholds — calibrated for F2LLM cosine range (0.60 – 0.95)
+# Similarity thresholds — calibrated for F2LLM cosine range (0.12 – 0.30)
+# due to 2048-D space orthogonality and centroid dampening.
 # ---------------------------------------------------------------------------
-_SIM_HIGH     = 0.80   # green
-_SIM_MED      = 0.65   # yellow
-_SIM_LOW_WARN = 0.55   # below this → warn
+_SIM_HIGH     = 0.22   # green
+_SIM_MED      = 0.16   # yellow
+_SIM_LOW_WARN = 0.12   # below this → warn
 
 
 def _load_artifacts() -> None:

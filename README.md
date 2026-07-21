@@ -314,8 +314,8 @@ New Complaint Text
 ### Reading the Confidence Signal
 
 - **Embedding similarity** measures how close the complaint text is geometrically to the center of the assigned topic cluster.
-- Values typically sit in the range `0.60 – 0.95` due to the semantic properties of the dense F2LLM embeddings.
-- If similarity falls below **55%**, the complaint is flagged as low confidence (`low_confidence: True`), indicating it is likely a fringe case or doesn't fit any known topic cleanly.
+- Values typically sit in the range `0.12 – 0.30` due to the semantic properties of the 2048-D F2LLM embeddings and centroid shrinkage.
+- If similarity falls below **12%**, the complaint is flagged as low confidence (`low_confidence: True`), indicating it is likely a fringe case or doesn't fit any known topic cleanly.
 
 ---
 
@@ -366,7 +366,7 @@ Enter a consumer complaint: My mortgage servicer incorrectly reported...
 
 - **Lazy artifact loading** — everything is loaded once and cached in memory; subsequent queries are instant
 - **Styled startup stats** — shows topic count, training document count, model name, and device
-- **Low-confidence warning** — if Embedding similarity falls below 55%, a `⚠ Low similarity` warning is displayed
+- **Low-confidence warning** — if Embedding similarity falls below 12%, a `⚠ Low similarity` warning is displayed
 - **Graceful error handling** — missing artifacts print a styled error message with the fix command, then exit cleanly
 - **Keyboard interrupt** — `Ctrl+C` exits gracefully at any point
 
