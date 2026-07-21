@@ -1,0 +1,70 @@
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontFamily': 'Arial, sans-serif', 'primaryColor': '#2c3e50', 'secondaryColor': '#ffffff', 'tertiaryColor': '#f0f4f8' } } }%%
+
+flowchart TB
+    subgraph data_group["1. Data Loading"]
+        direction LR
+        D1("CFPB raw CSV") --> D2("sample 50k")
+    end
+
+    subgraph clean_group["2. Data Preprocessing"]
+        direction LR
+        C1("Remove nulls") --> C2("PII redaction") --> C3("Language detect") --> C4("deduplicate")
+    end
+
+    subgraph embedding_group["3. Embedding Generation"]
+        direction LR
+        E1("Sentence F2LLM-1.7B") --> E2("Corpus embeddings")
+    end
+
+    subgraph dim_group["4. Dimensionality Reduction"]
+        direction LR
+        U1("UMAP reducer") --> U2("Reduced vectors")
+    end
+
+    subgraph cluster_group["5. Clustering"]
+        direction LR
+        H1("HDBSCAN eom") --> H2("Topic Labels")
+    end
+
+    subgraph topic_group["6. BERTopic Topic Extraction"]
+        T1("c-TF-IDF matrix")
+        T2("Topic vectors")
+        T3("Hierarchical topics")
+        T1 --> T4("Topic representations")
+        T2 --> T4
+        T3 --> T4
+    end
+
+    subgraph analysis_group["7. Topic Analysis"]
+        A1("Topic summary")
+        A2("Word clouds")
+        A3("Topic heatmap")
+        A1 --> A5("Visualizations")
+        A2 --> A5
+        A3 --> A5
+    end
+
+    subgraph inference_group["8. Inference on New Complaints"]
+        direction LR
+        I1("New complaint") --> I2("same embedding") --> I3("centroid similarity") --> I4("Topic assignment")
+    end
+
+    D2 --> C1
+    C4 --> E2
+    E2 --> U2
+    U2 --> H2
+    H2 --> T4
+    T4 --> A5
+    T4 --> I4
+
+    T4 --> A5
+    T4 --> I4
+
+    style data_group fill:#e8f5e9,stroke:#2c3e50,stroke-width:2px
+    style clean_group fill:#f3e5f5,stroke:#2c3e50,stroke-width:2px
+    style embedding_group fill:#e3f2fd,stroke:#2c3e50,stroke-width:2px
+    style dim_group fill:#fff3e0,stroke:#2c3e50,stroke-width:2px
+    style cluster_group fill:#fce4ec,stroke:#2c3e50,stroke-width:2px
+    style topic_group fill:#e8eaf6,stroke:#2c3e50,stroke-width:2px
+    style analysis_group fill:#f1f8e9,stroke:#2c3e50,stroke-width:2px
+    style inference_group fill:#fff8e1,stroke:#e65100,stroke-width:3px

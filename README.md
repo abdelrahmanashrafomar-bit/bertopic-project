@@ -20,54 +20,59 @@ The Consumer Financial Protection Bureau (CFPB) receives millions of consumer co
 
 ---
 
-## Solution Architecture
+## Architecture
 
+```mermaid
+%%{init: {'theme': 'neutral', 'themeVariables': { 'fontFamily': 'Arial, sans-serif' } } }%%
+flowchart TB
+    subgraph data["1. Data Loading"]
+        D1("CFPB raw CSV") --> D2("sample 50k")
+    end
+    subgraph clean["2. Data Preprocessing"]
+        C1("Remove nulls") --> C2("PII redaction") --> C3("Language detect") --> C4("Deduplicate")
+    end
+    subgraph embed["3. Embedding Generation"]
+        E1("F2LLM-1.7B") --> E2("2048-D embeddings")
+    end
+    subgraph umap["4. Dimensionality Reduction"]
+        U1("UMAP") --> U2("5-D vectors")
+    end
+    subgraph hdbscan["5. Clustering"]
+        H1("HDBSCAN") --> H2("Topic labels")
+    end
+    subgraph bertopic["6. BERTopic Topic Extraction"]
+        T1("c-TF-IDF") --> T4("Topic representations")
+        T2("Topic vectors") --> T4
+        T3("Hierarchy") --> T4
+    end
+    subgraph analysis["7. Topic Analysis"]
+        A1("Keywords") --> A5("HTML visualizations")
+        A2("Frequencies") --> A5
+        A3("Dendrogram") --> A5
+    end
+    subgraph inference["8. Inference"]
+        I1("New complaint") --> I2("Encode") --> I3("Centroid similarity") --> I4("Top-k topics")
+    end
+
+    D2 --> C1
+    C4 --> E2
+    E2 --> U2
+    U2 --> H2
+    H2 --> T4
+    T4 --> A5
+    T4 --> I4
+
+    style data fill:#e8f5e9,stroke:#2c3e50,stroke-width:2px
+    style clean fill:#f3e5f5,stroke:#2c3e50,stroke-width:2px
+    style embed fill:#e3f2fd,stroke:#2c3e50,stroke-width:2px
+    style umap fill:#fff3e0,stroke:#2c3e50,stroke-width:2px
+    style hdbscan fill:#fce4ec,stroke:#2c3e50,stroke-width:2px
+    style bertopic fill:#e8eaf6,stroke:#2c3e50,stroke-width:2px
+    style analysis fill:#f1f8e9,stroke:#2c3e50,stroke-width:2px
+    style inference fill:#fff8e1,stroke:#e65100,stroke-width:3px
 ```
-+-----------------------------------------------------------+
-|                     config.yaml                            |
-|    (single source of truth for all paths, params, methods) |
-+---------------------------+-------------------------------+
-                            |
-          +-----------------+-----------------+
-          |                 |                 |
-          v                 v                 v
-+--------------------+ +--------------------+ +--------------------+
-|  Preprocessing     | | Embedding Gen.     | | UMAP Reduction     |
-|                    | |                    | |                    |
-| complaints.csv     | | SentenceTrans.     | | embeddings.npy     |
-|       v            | |   model.encode()   | |       v            |
-| sample 50k rows    | |       v            | | embeddings_umap    |
-|       v            | | embeddings.npy     | |       .npy         |
-| clean text         | |  (2048-D vectors)  | |                    |
-| (redact PII)       | |                    | | tune_umap()        |
-|       v            | | Also: evaluate     | | (grid search on   |
-| detect language    | | embedding quality  | | trustworthiness + |
-|       v            | | via NN accuracy    | | DBCV)             |
-| deduplicate        | +--------------------+ +--------------------+
-|       v            |
-| bertopic_ready     |
-| .csv               |
-+--------------------+
-         |
-         v
-+--------------------+ +--------------------+ +--------------------+
-| HDBSCAN Clustering | | BERTopic Fitting   | | Gemini Labeling    |
-|                    | |                    | |                    |
-| embeddings_umap    | | BaseDimensionality | | BERTopic model --->|
-|       .npy         | | Reduction +        | |       v            |
-|       v            | | BaseCluster        | | topic_lookup.csv   |
-| tune_hdbscan()     | | (precomputed, no   | | labels.csv         |
-| (grid search on    | |  re-clustering)    | |       v            |
-| DBCV)              | |       v            | | final labeled CSV  |
-|       v            | | topics (renumbered | +--------------------+
-| cluster_labels     | |  by BERTopic in    |
-|   .npy             | |  memory; not saved |
-| (raw HDBSCAN       | |  to disk)          |
-|  labels)           | | + topic_centroids  |
-|                    | | + saved BERTopic   |
-|                    | |   model            |
-+--------------------+ +--------------------+
-```
+
+> PNG version: [docs/architecture.png](docs/architecture.png)
 
 ## Repository Structure
 

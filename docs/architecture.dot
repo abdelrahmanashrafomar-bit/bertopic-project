@@ -1,0 +1,121 @@
+digraph G {
+    rankdir = TB;
+    bgcolor = "#ffffff";
+    fontname = "Arial";
+    fontsize = 12;
+
+    node [shape = "box", style = "filled,rounded", fontname = "Arial", fontsize = 11, penwidth = 2];
+    edge [fontname = "Arial", fontsize = 10];
+
+    subgraph cluster_0 {
+        label = "1. Data Loading";
+        style = "filled,rounded";
+        fillcolor = "#e8f5e9";
+        color = "#2c3e50";
+
+        d1 [label = "CFPB Raw CSV"];
+        d2 [label = "Sample 50k rows"];
+        d1 -> d2;
+    }
+
+    subgraph cluster_1 {
+        label = "2. Data Preprocessing";
+        style = "filled,rounded";
+        fillcolor = "#f3e5f5";
+        color = "#2c3e50";
+
+        c1 [label = "Remove nulls"];
+        c2 [label = "PII redaction"];
+        c3 [label = "Language detect"];
+        c4 [label = "Deduplicate"];
+        c1 -> c2 -> c3 -> c4;
+    }
+
+    subgraph cluster_2 {
+        label = "3. Embedding Generation";
+        style = "filled,rounded";
+        fillcolor = "#e3f2fd";
+        color = "#2c3e50";
+
+        e1 [label = "Sentence F2LLM-1.7B"];
+        e2 [label = "Embeddings (2048-D)"];
+        e1 -> e2;
+    }
+
+    subgraph cluster_3 {
+        label = "4. Dimensionality Reduction";
+        style = "filled,rounded";
+        fillcolor = "#fff3e0";
+        color = "#2c3e50";
+
+        u1 [label = "UMAP reducer"];
+        u2 [label = "Reduced vectors (5-D)"];
+        u1 -> u2;
+    }
+
+    subgraph cluster_4 {
+        label = "5. Clustering";
+        style = "filled,rounded";
+        fillcolor = "#fce4ec";
+        color = "#2c3e50";
+
+        h1 [label = "HDBSCAN (eom)"];
+        h2 [label = "Topic labels"];
+        h1 -> h2;
+    }
+
+    subgraph cluster_5 {
+        label = "6. BERTopic Topic Extraction";
+        style = "filled,rounded";
+        fillcolor = "#e8eaf6";
+        color = "#2c3e50";
+
+        t1 [label = "c-TF-IDF matrix"];
+        t2 [label = "Topic vectors"];
+        t3 [label = "Hierarchical topics"];
+        t4 [label = "Topic representations"];
+
+        t1 -> t4;
+        t2 -> t4;
+        t3 -> t4;
+    }
+
+    subgraph cluster_6 {
+        label = "7. Topic Analysis";
+        style = "filled,rounded";
+        fillcolor = "#f1f8e9";
+        color = "#2c3e50";
+
+        a1 [label = "Topic summary"];
+        a2 [label = "Word clouds"];
+        a3 [label = "Topic heatmap"];
+        a5 [label = "HTML visualizations"];
+
+        a1 -> a5;
+        a2 -> a5;
+        a3 -> a5;
+    }
+
+    subgraph cluster_7 {
+        label = "8. Inference on New Complaints";
+        style = "filled,rounded";
+        fillcolor = "#fff8e1";
+        color = "#e65100";
+        penwidth = 3;
+
+        i1 [label = "New complaint text"];
+        i2 [label = "Sentence encoding"];
+        i3 [label = "Centroid similarity"];
+        i4 [label = "Top-k topics"];
+
+        i1 -> i2 -> i3 -> i4;
+    }
+
+    d2 -> c1;
+    c4 -> e2;
+    e2 -> u2;
+    u2 -> h2;
+    h2 -> t4;
+    t4 -> a5;
+    t4 -> i4;
+}
